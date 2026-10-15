@@ -12,12 +12,20 @@ from server.app.services.scheduler_service import (start_scheduler, stop_schedul
 from server.app.services.watchdog_service import watcher
 
 
-def test_watchdog_picks_up_zone_file(db, data_dir, monkeypatch):
-    """文件落盘 → 监听触发 → 入库（文件系统即消息总线）。"""
+def test_watchdog_picks_up_zone_file(db, data_dir, monkeypatch, app_client, headers):
+    """文件落盘 → 监听触发 → 入库（文件系统即消息总线）。按项目独立台账。"""
     from server.app import config
+    from server.app.models import HandoffOrder, Project
+    from server.app.services.five_libs import project_code_by_id
+    from server.app.services.handoff_sync import ledger_path
+
+    # 创建项目，确定其独立台账路径
+    r = app_client.post("/api/projects", json={"code": "PROJ-WD", "name": "WD"}, headers=headers)
+    assert r.status_code == 201
+    code = project_code_by_id(db, r.json()["id"])
 
     monkeypatch.setattr(config.settings, "watchdog_enabled", True)
-    order = {"project": "PM-Collab", "updated_at": "",
+    order = {"project": code, "updated_at": "",
              "orders": [{"code": "HO-WATCH", "sender": "PM-AI", "receiver": "DEV-AI",
                          "zone": "派单", "payload_path": "", "status": "待投喂",
                          "task_code": "T01", "content_hash": ""}]}
@@ -25,8 +33,7 @@ def test_watchdog_picks_up_zone_file(db, data_dir, monkeypatch):
     try:
         assert started
         time.sleep(0.3)
-        ledger_path().write_text(json.dumps(order, ensure_ascii=False, indent=2), encoding="utf-8")
-        from server.app.models import HandoffOrder
+        ledger_path(code).write_text(json.dumps(order, ensure_ascii=False, indent=2), encoding="utf-8")
 
         for _ in range(40):  # 去抖 0.6s，最多等 4s
             time.sleep(0.1)
@@ -36,6 +43,7 @@ def test_watchdog_picks_up_zone_file(db, data_dir, monkeypatch):
 
         row = db.query(HandoffOrder).filter(HandoffOrder.code == "HO-WATCH").first()
         assert row is not None and row.status == "待投喂"
+        assert row.project_id == r.json()["id"]
     finally:
         watcher.stop()
         assert watcher.observer is None

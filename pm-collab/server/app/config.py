@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     app_version: str = "0.1.0"
     host: str = "127.0.0.1"
     port: int = 8000
-    debug: bool = True
+    debug: bool = False
 
     # ---- 数据层 ----
     # 默认 SQLite（本机零依赖）；PG 形态：postgresql+psycopg://user:pwd@host:5432/pmcollab
@@ -29,7 +29,9 @@ class Settings(BaseSettings):
     db_echo: bool = False
 
     # ---- 认证 ----
-    secret_key: str = "REMOVED-FOR-OPENSOURCE"
+    # 留空表示「首次启动由系统随机生成 JWT 密钥并写入 .env」；
+    # 切勿在源码中写死密钥（OSS-02）。生产环境请通过 PM_SECRET_KEY 环境变量显式配置强密钥。
+    secret_key: str = ""
     jwt_alg: str = "HS256"
     jwt_expire_minutes: int = 60 * 12
 
@@ -45,8 +47,10 @@ class Settings(BaseSettings):
     feishu_webhook: str = ""  # 可选推送渠道，留空则仅本地通知/日志留痕
 
     # ---- 默认管理员（MVP 单用户）----
+    # 口令留空表示「首次启动由系统生成一次性随机密码并打印到控制台」，
+    # 切勿在源码中写死口令（OSS-02）。
     bootstrap_username: str = "admin"
-    bootstrap_password: str = "REMOVED-FOR-OPENSOURCE"
+    bootstrap_password: str = ""
 
     @property
     def is_sqlite(self) -> bool:

@@ -12,7 +12,8 @@ from watchdog.observers import Observer
 
 from ..config import settings
 from ..db import SessionLocal
-from .five_libs import HANDOFF_ZONES, ensure_libraries
+from ..models import Project
+from .five_libs import ensure_libraries
 
 DEBOUNCE_SECONDS = 0.6
 
@@ -54,8 +55,9 @@ class HandoffWatcher:
 
         db = SessionLocal()
         try:
-            result = sync_from_zone(db, actor="watchdog")
-            print(f"[watchdog] 交接区同步：{result}")
+            # 逐项目同步各自独立交接区
+            for pid in [p.id for p in db.query(Project.id).all()]:
+                sync_from_zone(db, pid, actor="watchdog")
         finally:
             db.close()
 
@@ -63,11 +65,10 @@ class HandoffWatcher:
         if not settings.watchdog_enabled:
             return False
         ensure_libraries()
+        (settings.data_dir / "projects").mkdir(parents=True, exist_ok=True)
         handler = _DebouncedHandler(self._batch_sync)
         observer = Observer()
-        for zone in HANDOFF_ZONES:
-            observer.schedule(handler, str(settings.handoff_dir / zone), recursive=True)
-        observer.schedule(handler, str(settings.handoff_dir), recursive=False)
+        observer.schedule(handler, str(settings.data_dir / "projects"), recursive=True)
         observer.daemon = True
         observer.start()
         self.observer = observer

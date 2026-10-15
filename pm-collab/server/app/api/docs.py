@@ -1,19 +1,59 @@
 """文档条目 / 版本台账 / 五库托管（E 文档与版本域；T12）。"""
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..audit import raise_checkpoint, write_log
 from ..config import settings
 from ..models import DocEntry, Member, VersionLedger
 from ..schemas import DocEntryIn, VersionIn
-from ..utils import sha256_file, today_str, validate_doc_name
+from ..services.five_libs import (
+    ensure_project_structure,
+    project_code_by_id,
+    project_lib_path,
+)
+from ..utils import TYPE_WORDS, sha256_file, today_str, validate_doc_name
 from .deps import current_member, get_db, project_ctx
 
 router = APIRouter(prefix="/api", tags=["文档与版本"])
+
+# 五库 → 类型词（文档组织方案 §4.2），用于无 path 时生成合规默认文件名
+_LIB_TYPE_WORDS = {
+    "01_项目库": "模板",
+    "02_需求库": "需求基线",
+    "03_设计库": "设计文档",
+    "04_测试": "测试报告",
+    "05_运维": "发布日志",
+}
+
+
+def _normalize_version(v: str) -> str:
+    """归一化为 V主.次.修订（命名规则要求三段），如 V1.0 → V1.0.0。"""
+    v = v or "V1.0.0"
+    if not v.startswith("V"):
+        v = "V" + v
+    nums = re.findall(r"\d+", v)
+    if not nums:
+        return "V1.0.0"
+    major = nums[0]
+    minor = nums[1] if len(nums) > 1 else "0"
+    patch = nums[2] if len(nums) > 2 else "0"
+    return f"V{major}.{minor}.{patch}"
+
+
+def _resolve_doc_path(path: str, project_code: str) -> str:
+    """相对路径统一以 data/projects/<code>/ 为基准解析（O-15），保证哈希/校验一致。"""
+    if not path:
+        return path
+    p = Path(path)
+    if not p.is_absolute():
+        p = Path(settings.data_dir) / "projects" / project_code / path
+    return str(p)
 
 
 # ---------------- 五库托管 ----------------
@@ -33,6 +73,8 @@ def _scan_libraries() -> list[dict]:
     out = []
     for d in sorted(root.iterdir()):
         if not d.is_dir():
+            continue
+        if d.name == "projects":  # 各项目独立目录不进入全局五库视图
             continue
         files = [f for f in d.rglob("*") if f.is_file()]
         out.append({"name": d.name, "path": str(d), "file_count": len(files)})
@@ -73,18 +115,39 @@ def create_doc(
 ) -> dict:
     data = payload.model_dump()
     path = data.get("path") or ""
+    code = project_code_by_id(db, pid)
+    # 用户提供的相对路径统一以项目目录为基准解析（O-15）
+    if path:
+        path = _resolve_doc_path(path, code)
+        data["path"] = path
+    # 未给路径时，默认登记到本项目独立目录的对应五库（按 library 归类），
+    # 文件名遵循《文档组织方案》§4：项目-类型-名称-V主.次.修订.md
+    if not path:
+        ensure_project_structure(code)
+        library = data.get("library") or "01_项目库"
+        category = (data.get("category") or "").strip()
+        type_word = category if category in TYPE_WORDS else _LIB_TYPE_WORDS.get(library, "模板")
+        version = _normalize_version(data.get("version") or "V1.0.0")
+        name = data.get("name") or "未命名"
+        default_name = f"{code}-{type_word}-{name}-{version}.md"
+        path = str(project_lib_path(code, library) / default_name)
+        data["path"] = path
     ok, msg = validate_doc_name(Path(path).name or f"{'-'.join(['PM-Collab', '模板', data['name'], data['version']])}.md")
     if path and not ok:
         raise HTTPException(status_code=422, detail=f"文档命名不合规：{msg}")
 
     obj = DocEntry(**data, project_id=pid)
     obj.file_hash = sha256_file(path) if path and Path(path).exists() else ""
-    db.add(obj)
-    db.flush()
+    try:
+        db.add(obj)
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=f"文档编号 {obj.doc_no} 已在本项目存在（项目内唯一）")
     write_log(db, actor=actor.name, action="登记文档条目",
               change=f"{obj.doc_no} {obj.name} {obj.version}", artifact_path=obj.path)
     db.commit()
-    return {"id": obj.id, "doc_no": obj.doc_no, "file_hash": obj.file_hash}
+    return {"id": obj.id, "doc_no": obj.doc_no, "path": obj.path, "file_hash": obj.file_hash}
 
 
 @router.get("/docs/{doc_id}/verify")
@@ -116,6 +179,59 @@ def verify_doc(
         "doc_no": obj.doc_no, "status": "哈希一致" if matched else "哈希不匹配告警",
         "alert": not matched, "registered_hash": obj.file_hash, "current_hash": current_hash,
     }
+
+
+@router.put("/docs/{doc_id}", response_model=dict)
+def update_doc(
+    doc_id: str,
+    payload: DocEntryIn,
+    db: Session = Depends(get_db),
+    actor: Member = Depends(current_member),
+) -> dict:
+    """编辑文档条目（编号不可改；路径合规校验）。"""
+    obj = db.get(DocEntry, doc_id)
+    if obj is None:
+        raise HTTPException(status_code=404, detail="文档条目不存在")
+    data = payload.model_dump()
+    data.pop("doc_no", None)  # 编号不可改，保可追溯
+    if data.get("path"):
+        code = project_code_by_id(db, obj.project_id)
+        data["path"] = _resolve_doc_path(data["path"], code)
+        ok, msg = validate_doc_name(Path(data["path"]).name)
+        if not ok:
+            raise HTTPException(status_code=422, detail=f"文档命名不合规：{msg}")
+    for key, value in data.items():
+        setattr(obj, key, value)
+    obj.file_hash = sha256_file(obj.path) if obj.path and Path(obj.path).exists() else obj.file_hash
+    write_log(db, actor=actor.name, action="编辑文档条目",
+              change=f"{obj.doc_no} {obj.name} {obj.version}", artifact_path=obj.path or "")
+    db.commit()
+    return {"id": obj.id, "doc_no": obj.doc_no, "path": obj.path, "file_hash": obj.file_hash}
+
+
+@router.delete("/docs/{doc_id}")
+def delete_doc(
+    doc_id: str,
+    db: Session = Depends(get_db),
+    actor: Member = Depends(current_member),
+) -> dict:
+    """删除文档条目（同时尝试删除文件库中的正文文件）。"""
+    obj = db.get(DocEntry, doc_id)
+    if obj is None:
+        raise HTTPException(status_code=404, detail="文档条目不存在")
+    path = obj.path
+    db.delete(obj)
+    write_log(db, actor=actor.name, action="删除文档条目", change=f"{obj.doc_no} {obj.name}",
+              artifact_path=path or "")
+    db.commit()
+    if path:
+        try:
+            p = Path(path)
+            if p.exists() and settings.data_dir in p.parents:
+                p.unlink()
+        except Exception:
+            pass
+    return {"deleted": doc_id}
 
 
 @router.get("/requirements")

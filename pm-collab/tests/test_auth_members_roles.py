@@ -9,7 +9,7 @@ ROLE_PAYLOAD = {
 
 
 def test_login_ok_and_me(app_client):
-    r = app_client.post("/api/auth/login", json={"username": "admin", "password": "REMOVED-FOR-OPENSOURCE"})
+    r = app_client.post("/api/auth/login", json={"username": "admin", "password": ""})
     assert r.status_code == 200 and r.json()["username"] == "admin"
     token = r.json()["access_token"]
     me = app_client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})

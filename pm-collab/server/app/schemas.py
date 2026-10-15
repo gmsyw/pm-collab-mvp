@@ -59,6 +59,7 @@ class MemberOut(BaseModel):
     member_type: str
     status: str
     reports_to: str | None = None
+    project_id: str
     created_at: datetime
 
 
@@ -93,6 +94,7 @@ class RoleCardOut(BaseModel):
     data_boundary: str
     reports_to: str | None = None
     downgrade_plan: str
+    project_id: str
 
 
 # ---------------- 任务卡（14 字段） ----------------
@@ -115,6 +117,8 @@ class TaskCardIn(ForbidExtra):
     work_package: str = ""  # 冗余展示字段，由 work_package_id 反查填充
     milestone_id: str | None = None
     work_package_id: str | None = None
+    parent_task_id: str | None = None  # V0.4：父子任务链
+    module_tag: str | None = None  # V0.4：模块标签 S1~S8
     extra: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("priority")
@@ -150,6 +154,9 @@ class HandoffIn(ForbidExtra):
     zone: str = "派单"
     payload_path: str = ""
     task_code: str | None = None
+    event_type: str = ""  # V0.4：结构化事件类型
+    round: int = 0  # V0.4：评审轮次
+    evidence: dict[str, Any] = Field(default_factory=dict)  # V0.4：QA 证据
     extra: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -300,6 +307,16 @@ class ProjectIn(ForbidExtra):
     name: str
     description: str = ""
     owner: str = ""
+
+
+class ProjectUpdateIn(ForbidExtra):
+    """项目编辑：仅更新传入字段（编号不可改，即便传入也会被忽略）。"""
+
+    code: str | None = None  # 占位，更新时被忽略
+    name: str | None = None
+    description: str | None = None
+    owner: str | None = None
+    status: str | None = None
 
 
 # ---------------- 流程与门禁 ----------------

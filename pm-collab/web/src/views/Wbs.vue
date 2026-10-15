@@ -35,7 +35,7 @@
 
             <div v-for="t in wp.tasks" :key="t.id" class="wbs-task">
               <div class="wbs-task-head">
-                <span class="wbs-code">{{ t.code }}</span>
+                <RefLink type="task" :value="t.code" :label="t.code" class="wbs-code" />
                 <span>{{ t.title }}</span>
                 <el-tag size="small" :type="statusType(t.status)">{{ t.status }}</el-tag>
                 <el-tag v-if="t.sub_task_count" size="small" type="warning">子任务 {{ t.sub_task_count }}</el-tag>
@@ -50,6 +50,7 @@
                   <el-tag size="small" :type="statusType(s.status)">{{ s.status }}</el-tag>
                   <span class="wbs-muted">{{ s.assignee || '—' }} · {{ s.priority }}</span>
                   <span class="wbs-actions">
+                    <el-button size="small" @click="openSubEdit(s)">编辑</el-button>
                     <el-select size="small" v-model="s._target" placeholder="迁移" style="width:100px">
                       <el-option v-for="tg in subTargets(s.status)" :key="tg" :label="tg" :value="tg" />
                     </el-select>
@@ -154,6 +155,33 @@
         <el-button type="primary" :loading="saving" @click="saveSubTask">保存</el-button>
       </template>
     </el-dialog>
+
+    <!-- 子任务编辑对话框 -->
+    <el-dialog v-model="subEditDlg" title="编辑子任务" width="480px">
+      <el-form label-width="90px" size="small">
+        <el-form-item label="编号"><el-input v-model="subEditForm.code" disabled /></el-form-item>
+        <el-form-item label="标题"><el-input v-model="subEditForm.title" /></el-form-item>
+        <el-form-item label="负责人"><el-input v-model="subEditForm.assignee" /></el-form-item>
+        <el-form-item label="状态">
+          <el-select v-model="subEditForm.status" style="width:100%">
+            <el-option v-for="s in Object.keys(SUB_TRANSITIONS)" :key="s" :label="s" :value="s" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="优先级">
+          <el-radio-group v-model="subEditForm.priority">
+            <el-radio-button value="P0" label="P0" />
+            <el-radio-button value="P1" label="P1" />
+            <el-radio-button value="P2" label="P2" />
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item label="截止"><el-input v-model="subEditForm.due_date" placeholder="YYYY-MM-DD" /></el-form-item>
+        <el-form-item label="说明"><el-input v-model="subEditForm.description" type="textarea" :rows="2" /></el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="subEditDlg = false">取消</el-button>
+        <el-button type="primary" :loading="saving" @click="saveSubEdit">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -161,6 +189,7 @@
 import { onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { milestonesApi, workpackagesApi, subtasksApi, wbsApi } from '../api'
+import RefLink from '../components/RefLink.vue'
 
 const loading = ref(false)
 const saving = ref(false)
@@ -245,11 +274,18 @@ async function removeWorkPackage(wp) {
 
 // ---------------- 子任务 ----------------
 const subDlg = ref(false)
+const subEditDlg = ref(false)
 const subTaskParentId = ref('')
 const subTaskParentCode = ref('')
 const subForm = ref(blankSub())
-function blankSub() { return { code: '', title: '', assignee: '', priority: 'P2', due_date: '', description: '' } }
+const subEditForm = ref(blankSub())
+function blankSub() { return { id: '', code: '', title: '', assignee: '', priority: 'P2', status: '待办', due_date: '', description: '' } }
 function openSubTask(t) { subTaskParentId.value = t.id; subTaskParentCode.value = t.code; subForm.value = blankSub(); subDlg.value = true }
+function openSubEdit(s) {
+  subEditForm.value = { id: s.id, code: s.code, title: s.title, assignee: s.assignee || '',
+    priority: s.priority || 'P2', status: s.status || '待办', due_date: s.due_date || '', description: s.description || '' }
+  subEditDlg.value = true
+}
 async function saveSubTask() {
   if (!subForm.value.code || !subForm.value.title) return ElMessage.warning('请填写编号与标题')
   saving.value = true
@@ -257,6 +293,17 @@ async function saveSubTask() {
     await subtasksApi.create({ ...subForm.value, task_id: subTaskParentId.value })
     ElMessage.success('子任务已创建')
     subDlg.value = false
+    await load()
+  } catch (e) { ElMessage.error(e.message) } finally { saving.value = false }
+}
+async function saveSubEdit() {
+  if (!subEditForm.value.title) return ElMessage.warning('请填写标题')
+  saving.value = true
+  try {
+    const { id, code, ...payload } = subEditForm.value
+    await subtasksApi.update(id, payload)
+    ElMessage.success('子任务已更新')
+    subEditDlg.value = false
     await load()
   } catch (e) { ElMessage.error(e.message) } finally { saving.value = false }
 }

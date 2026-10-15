@@ -27,18 +27,28 @@ http.interceptors.request.use((config) => {
 http.interceptors.response.use(
   (res) => res.data,
   (err) => {
+    const status = err.response?.status
     const detail = err.response?.data?.detail || err.message
+    if (status === 401) {
+      // OSS-02：token 失效（含改密吊销）→ 清除本地凭证并回到登录页
+      localStorage.removeItem('pm_token')
+      localStorage.removeItem('pm_user')
+      window.location.href = '/'
+    }
     return Promise.reject(new Error(detail))
   }
 )
 
 export const authApi = {
   login: (username, password) => http.post('/auth/login', { username, password }),
-  me: () => http.get('/auth/me')
+  me: () => http.get('/auth/me'),
+  changePassword: (old_password, new_password) =>
+    http.post('/auth/change-password', { old_password, new_password })
 }
 
 export const rolesApi = {
   list: (params) => http.get('/roles', { params }),
+  byCode: (code) => http.get(`/roles/code/${encodeURIComponent(code)}`),
   create: (data) => http.post('/roles', data),
   update: (id, data) => http.put(`/roles/${id}`, data),
   remove: (id) => http.delete(`/roles/${id}`)
@@ -46,12 +56,16 @@ export const rolesApi = {
 
 export const membersApi = {
   list: (params) => http.get('/members', { params }),
+  byCode: (code) => http.get(`/members/code/${encodeURIComponent(code)}`),
   create: (data) => http.post('/members', data),
+  update: (id, data) => http.put(`/members/${id}`, data),
   remove: (id) => http.delete(`/members/${id}`)
 }
 
 export const tasksApi = {
   list: (params) => http.get('/tasks', { params }),
+  byCode: (code) => http.get(`/tasks/code/${encodeURIComponent(code)}`),
+  get: (id) => http.get(`/tasks/${id}`),
   create: (data) => http.post('/tasks', data),
   update: (id, data) => http.put(`/tasks/${id}`, data),
   transition: (id, target, note) => http.post(`/tasks/${id}/transition`, { target, note }),
@@ -64,11 +78,13 @@ export const processApi = {
   sign: (data) => http.post('/process/gates/sign', data),
   advance: (target) => http.post('/process/advance', { target }),
   testResult: (data) => http.post('/process/test-result', data),
-  checklist: () => http.get('/process/checklist')
+  checklist: () => http.get('/process/checklist'),
+  guide: () => http.get('/process/guide')
 }
 
 export const handoffApi = {
   list: (params) => http.get('/handoff', { params }),
+  get: (id) => http.get(`/handoff/${id}`),
   zones: () => http.get('/handoff/zones'),
   create: (data) => http.post('/handoff', data),
   transition: (id, target) => http.post(`/handoff/${id}/transition`, { target }),
@@ -76,6 +92,11 @@ export const handoffApi = {
   feed: (taskId, receiver) => http.post(`/handoff/feed/${taskId}`, null, { params: { receiver } }),
   recycle: (id) => http.post(`/handoff/recycle/${id}`),
   close: (id) => http.post(`/handoff/${id}/close`)
+}
+
+export const filesApi = {
+  previewUrl: (path) => `/api/files/preview?path=${encodeURIComponent(path)}`,
+  preview: (path) => http.get('/files/preview', { params: { path }, responseType: 'blob' })
 }
 
 export const checkpointsApi = {
@@ -91,10 +112,17 @@ export const reportApi = {
   logs: (limit = 100) => http.get('/report/logs', { params: { limit } })
 }
 
+export const vizApi = {
+  timeline: (taskCode) => http.get('/viz/timeline', { params: { task_code: taskCode } }),
+  swimlane: () => http.get('/viz/swimlane')
+}
+
 export const docsApi = {
   libs: () => http.get('/libs/tree'),
   list: (params) => http.get('/docs', { params }),
   create: (data) => http.post('/docs', data),
+  update: (id, data) => http.put(`/docs/${id}`, data),
+  remove: (id) => http.delete(`/docs/${id}`),
   verify: (id) => http.get(`/docs/${id}/verify`),
   versions: (params) => http.get('/versions', { params }),
   addVersion: (data) => http.post('/versions', data),
@@ -105,7 +133,8 @@ export const docsApi = {
 export const projectsApi = {
   list: () => http.get('/projects'),
   create: (data) => http.post('/projects', data),
-  get: (id) => http.get(`/projects/${id}`)
+  get: (id) => http.get(`/projects/${id}`),
+  update: (id, data) => http.put(`/projects/${id}`, data)
 }
 
 // WBS 分解：里程碑 / 工作包 / 子任务（四层 + 任务下拆子任务）

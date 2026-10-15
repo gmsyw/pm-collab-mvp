@@ -1,30 +1,56 @@
-# ===== Python =====
+# ============ 密钥 / 环境变量 ============
+.env
+.env.local
+*.env
+
+# ============ Python ============
 __pycache__/
 *.py[cod]
 .venv/
-venv/
-env/
 .pytest_cache/
 .coverage
 htmlcov/
+*.egg-info/
 
-# ===== Node / 前端（pm-collab/web） =====
-node_modules/
-dist/
-*.map
-
-# ===== 运行时数据 & 日志（pm-collab/data、服务日志） =====
-data/
+# ============ 数据库与运行时产物 ============
 *.db
-*.sqlite3
+*.db.bak
+*.db.bak_*
 *.log
-*.err
-*.bak_before_fix
+.smoke_tmp.db
+.alembic_empty.db
+.uvicorn.log
+.uvicorn.err
+server.out.log
+server.err.log
+web.out.log
+web.err.log
+_smoke_file.py
 
-# ===== 编辑器 / 系统 =====
+# ============ 真实项目数据（绝不进入公开仓库） ============
+pm-collab/data/
+data/
+
+# ============ 前端 ============
+node_modules/
+# web/dist 随仓库发布（设计 OSS-04：单机部署免 Node），特此放行：
+!pm-collab/web/dist/
+!pm-collab/web/dist/**
+
+# ============ 操作系统 ============
+Thumbs.db
 .DS_Store
-.idea/
 .vscode/
 
-# ===== 项目工具数据（非源码） =====
-.codebuddy/
+# ============ 内部安装包与构建产物（不进 release/oss，且为含旧字面量的旧副本） ============
+PM-Collab-安装包/
+PM-Collab-安装包-linux/
+PM-Collab-安装包*.zip
+PM-Collab-安装包*-linux.tar.gz
+pm-collab/web/dist/
+pm-collab/_dbg.py
+_sync_pack.py
+
+# ============ 一次性临时文件（如 git filter-repo 的 blob 替换输入，含旧字面量） ============
+# 切勿提交；如需跑 filter-repo 历史清洗，用后请立即删除。
+replace.txt

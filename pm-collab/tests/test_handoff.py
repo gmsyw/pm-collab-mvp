@@ -84,47 +84,56 @@ def test_recycle_not_found_and_illegal(app_client, headers):
     assert app_client.post(f"/api/handoff/feed/nope", headers=headers).status_code == 404
 
 
-def test_sync_db_to_file_and_back(app_client, headers):
+def test_sync_db_to_file_and_back(app_client, headers, db):
+    from server.app.models import Project
+    from server.app.services.five_libs import project_code_by_id
+    from server.app.services.handoff_sync import ledger_path
+
     task = _task(app_client, headers)
     feed = app_client.post(f"/api/handoff/feed/{task['id']}", params={"receiver": "DEV-AI"},
                            headers=headers).json()
     order = app_client.get("/api/handoff", headers=headers).json()[0]
+    code = project_code_by_id(db, task["project_id"])
 
     res = app_client.post("/api/handoff/sync", params={"direction": "to"}, headers=headers).json()
-    assert res["count"] >= 1
+    assert any(r["count"] >= 1 for r in res["to"])
 
     # 外部 AI 修改交接单 JSON：状态推进到「已闭环」应被识别为非法冲突
-    from server.app.services.handoff_sync import ledger_path
-
-    payload = json.loads(ledger_path().read_text(encoding="utf-8"))
+    payload = json.loads(ledger_path(code).read_text(encoding="utf-8"))
     payload["orders"][0]["status"] = "已闭环"
-    ledger_path().write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    ledger_path(code).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     res = app_client.post("/api/handoff/sync", params={"direction": "from"}, headers=headers).json()
-    assert res["created"] == 0 and res["conflicts"], res
+    assert any(r["conflicts"] for r in res["from"]), res
     assert app_client.get("/api/handoff", headers=headers).json()[0]["status"] == "已投喂"
 
     # 合法的方向 ρ：文件推进到「已回收」应被接受
     payload["orders"][0]["status"] = "已回收"
-    ledger_path().write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    ledger_path(code).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     res = app_client.post("/api/handoff/sync", params={"direction": "from"}, headers=headers).json()
-    assert res["updated"] == 1 and not res["conflicts"]
+    assert any(r["updated"] == 1 for r in res["from"]) and not any(r["conflicts"] for r in res["from"])
     assert app_client.get("/api/handoff", headers=headers).json()[0]["status"] == "已回收"
     assert len(order) > 0
 
 
-def test_sync_missing_ledger_file(app_client, headers):
+def test_sync_missing_ledger_file(app_client, headers, db):
+    from server.app.services.five_libs import project_code_by_id
     from server.app.services.handoff_sync import ledger_path
+    from server.app.services.projects import ensure_default_project
 
-    if ledger_path().exists():
-        ledger_path().unlink()
+    code = ensure_default_project(db).code
+    if ledger_path(code).exists():
+        ledger_path(code).unlink()
     res = app_client.post("/api/handoff/sync", params={"direction": "from"}, headers=headers).json()
-    assert res["created"] == 0
+    assert all(r["created"] == 0 for r in res["from"])
 
 
-def test_broken_json_is_safely_reported(app_client, headers):
+def test_broken_json_is_safely_reported(app_client, headers, db):
+    from server.app.services.five_libs import project_code_by_id
     from server.app.services.handoff_sync import ledger_path
+    from server.app.services.projects import ensure_default_project
 
-    ledger_path().write_text("{ broken json", encoding="utf-8")
+    code = ensure_default_project(db).code
+    ledger_path(code).write_text("{ broken json", encoding="utf-8")
     res = app_client.post("/api/handoff/sync", params={"direction": "from"}, headers=headers).json()
-    assert "error" in res and "解析失败" in res["error"]
+    assert any("error" in r and "解析失败" in r["error"] for r in res["from"])

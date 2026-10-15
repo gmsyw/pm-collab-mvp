@@ -68,8 +68,11 @@ class Member(Base, TimestampMixin):
     reports_to: Mapped[str | None] = mapped_column(String(36), nullable=True)  # 汇报对象成员 ID
     username: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)
     password_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    # MVP 单用户；保留多用户扩展字段
-    project_id: Mapped[str] = mapped_column(String(36), default="default")
+    # 改密后旧 token 吊销（OSS-02）：NULL=不限制；改密时写入时间戳，
+    # iat 早于该时间的 JWT 一律 401（无状态吊销，单机零开销）。
+    token_valid_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # MVP 单用户；保留多用户扩展字段。默认归属规范化为 DEFAULT_PROJECT_ID（不再用字面量 "default"）
+    project_id: Mapped[str] = mapped_column(String(36), default=DEFAULT_PROJECT_ID)
     extra: Mapped[dict] = mapped_column(JsonType, default=dict)
 
 
@@ -79,6 +82,7 @@ class RoleCard(Base, TimestampMixin):
     __tablename__ = "role_cards"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    project_id: Mapped[str] = mapped_column(String(36), default=DEFAULT_PROJECT_ID, nullable=False, index=True)
     code: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     role_type: Mapped[str] = mapped_column(String(32), nullable=False)  # 人类角色/AI角色
     duty: Mapped[str] = mapped_column(Text, nullable=False)  # 职责
@@ -124,6 +128,10 @@ class TaskCard(Base, TimestampMixin):
     # WBS 层级关联（需求书 §4.1：项目→里程碑→工作包→任务；任务下再拆子任务）
     milestone_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     work_package_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    # V0.4 新增：父子任务链（详设→开发→QA→合入四子任务链）
+    parent_task_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    # V0.4 新增：模块标签 S1~S8（模块泳道视图聚合键）
+    module_tag: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
     extra: Mapped[dict] = mapped_column(JsonType, default=dict)
 
 
@@ -213,6 +221,10 @@ class HandoffOrder(Base, TimestampMixin):
     recycled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     content_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # V0.4 新增：结构化事件字段（M3 起新建交接单强制填写；迁移数据由服务层正则推断）
+    event_type: Mapped[str] = mapped_column(String(32), default="")  # 派单/开发交付/评审意见/修订返工/QA通过/签字/合入
+    round: Mapped[int] = mapped_column(Integer, default=0)  # 评审轮次
+    evidence: Mapped[dict] = mapped_column(JsonType, default=dict)  # QA 用例数/覆盖率/缺陷数等
     extra: Mapped[dict] = mapped_column(JsonType, default=dict)
 
 
@@ -244,7 +256,8 @@ class DocEntry(Base, TimestampMixin):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     project_id: Mapped[str] = mapped_column(String(36), default=DEFAULT_PROJECT_ID, nullable=False)
-    doc_no: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)  # 唯一编号
+    # 编号唯一性：项目内唯一（需求书 §4.1），跨项目允许复用 —— 复合唯一 (project_id, doc_no)
+    doc_no: Mapped[str] = mapped_column(String(64), nullable=False)  # 唯一编号
     library: Mapped[str] = mapped_column(String(16), default="01_项目库")  # 五库归属
     category: Mapped[str] = mapped_column(String(64), default="")  # 类型
     name: Mapped[str] = mapped_column(String(256), nullable=False)
@@ -254,6 +267,10 @@ class DocEntry(Base, TimestampMixin):
     path: Mapped[str] = mapped_column(Text, default="")
     file_hash: Mapped[str] = mapped_column(String(128), default="")
     extra: Mapped[dict] = mapped_column(JsonType, default=dict)
+
+    __table_args__ = (
+        UniqueConstraint("project_id", "doc_no", name="uq_doc_entries_project_docno"),
+    )
 
 
 class VersionLedger(Base, TimestampMixin):

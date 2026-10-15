@@ -13,7 +13,12 @@ from ..config import settings
 from ..models import HandoffOrder, Member, TaskCard
 from ..schemas import HandoffIn, HandoffTransitionIn
 from ..services import handoff_sync as hs
-from ..services.five_libs import ensure_libraries, list_zone_files, zone_path
+from ..services.five_libs import (
+    ensure_libraries,
+    list_project_zone_files,
+    project_code_by_id,
+    project_zone_path,
+)
 from ..state_machine import can_transit_handoff
 from ..utils import today_str
 from .deps import current_member, get_db, project_ctx
@@ -26,6 +31,7 @@ def _out(r: HandoffOrder) -> dict:
         "id": r.id, "code": r.code, "sender": r.sender, "receiver": r.receiver,
         "zone": r.zone, "payload_path": r.payload_path, "status": r.status,
         "task_code": r.task_code,
+        "event_type": r.event_type, "round": r.round, "evidence": r.evidence or {},
         "fed_at": r.fed_at.isoformat() if r.fed_at else None,
         "recycled_at": r.recycled_at.isoformat() if r.recycled_at else None,
         "closed_at": r.closed_at.isoformat() if r.closed_at else None,
@@ -46,8 +52,27 @@ def list_orders(
 
 
 @router.get("/zones")
-def zones(_: Member = Depends(current_member)) -> dict:
-    return {"handoff_dir": str(settings.handoff_dir), "files": list_zone_files()}
+def zones(
+    pid: str = Depends(project_ctx),
+    db: Session = Depends(get_db),
+    _: Member = Depends(current_member),
+) -> dict:
+    code = project_code_by_id(db, pid)
+    return {"project": code, "handoff_dir": str(project_zone_path(code, "").parent), "files": list_project_zone_files(code)}
+
+
+@router.get("/{order_id}")
+def get_order(
+    order_id: str,
+    pid: str = Depends(project_ctx),
+    db: Session = Depends(get_db),
+    _: Member = Depends(current_member),
+) -> dict:
+    """按交接单 id 取单条，供关联跳转（就地抽屉）使用。"""
+    obj = db.query(HandoffOrder).filter(HandoffOrder.id == order_id, HandoffOrder.project_id == pid).first()
+    if obj is None:
+        raise HTTPException(status_code=404, detail="交接单不存在")
+    return _out(obj)
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -65,7 +90,7 @@ def create_order(
     write_log(db, actor=actor.name, action="创建交接单",
               change=f"{obj.code} → {obj.receiver}（{obj.zone}）", artifact_path=obj.payload_path)
     db.commit()
-    hs.sync_to_zone(db)
+    hs.sync_to_zone(db, obj.project_id)
     return _out(obj)
 
 
@@ -88,7 +113,7 @@ def transition_order(
     write_log(db, actor=actor.name, action="交接单状态迁移",
               change=f"{obj.code}：{obj.status} → {payload.target}", artifact_path=obj.payload_path)
     db.commit()
-    hs.sync_to_zone(db)
+    hs.sync_to_zone(db, obj.project_id)
     return _out(obj)
 
 
@@ -96,14 +121,19 @@ def transition_order(
 def sync(direction: Literal["to", "from", "both"] = Query(default="both"),
          db: Session = Depends(get_db),
          actor: Member = Depends(current_member)) -> dict:
-    """手动双向同步（对账入口，MVP 风险项：文件与库双写不一致）。"""
+    """手动双向同步（对账入口，MVP 风险项：文件与库双写不一致）。按项目逐个同步。"""
+    from ..models import Project
+
     result: dict = {}
+    project_ids = [p.id for p in db.query(Project.id).all()]
     if direction in ("from", "both"):
-        result.update(hs.sync_from_zone(db, actor=actor.name))
+        result["from"] = [
+            hs.sync_from_zone(db, pid, actor=actor.name) for pid in project_ids
+        ]
     if direction in ("to", "both"):
-        result.update(hs.sync_to_zone(db))
-    if "direction" not in result:
-        result["direction"] = direction
+        result["to"] = [hs.sync_to_zone(db, pid) for pid in project_ids]
+    result["direction"] = direction
+    result["projects"] = len(project_ids)
     return result
 
 
@@ -120,7 +150,7 @@ def feed_task(
         raise HTTPException(status_code=404, detail="任务不存在")
 
     ensure_libraries()
-    path = hs.render_task_card_file(task)
+    path = hs.render_task_card_file(task, db)
     code = f"HO-{task.code}"
     order = db.query(HandoffOrder).filter(HandoffOrder.code == code).first()
     if order is None:
@@ -146,7 +176,7 @@ def feed_task(
         expect_by="当日",
     )
     db.commit()
-    hs.sync_to_zone(db)
+    hs.sync_to_zone(db, task.project_id)
     return {"task_code": task.code, "file": str(path), "order": order.code, "status": order.status}
 
 
@@ -166,7 +196,7 @@ def recycle_order(
     if not can_transit_handoff(order.status, "已回收"):
         raise HTTPException(status_code=409, detail=f"当前状态不可回收：{order.status}")
 
-    candidates = _find_completion(order)
+    candidates = _find_completion(order, db)
     if not candidates:
         raise HTTPException(
             status_code=404,
@@ -197,7 +227,7 @@ def recycle_order(
               artifact_path=parsed["path"],
               next_step=f"台账登记 {ledger.version if ledger else '（跳过）'}，等待评审签字")
     db.commit()
-    hs.sync_to_zone(db)
+    hs.sync_to_zone(db, order.project_id)
     return {
         "order": order.code, "status": order.status, "file": parsed["path"],
         "task_code": task.code if task else None,
@@ -206,9 +236,10 @@ def recycle_order(
     }
 
 
-def _find_completion(order: HandoffOrder) -> list[Path]:
-    """按任务编号匹配「完成/」目录产物。"""
-    done_dir = zone_path("完成")
+def _find_completion(order: HandoffOrder, db: Session) -> list[Path]:
+    """按任务编号匹配本项目「完成/」目录产物。"""
+    code = project_code_by_id(db, order.project_id)
+    done_dir = project_zone_path(code, "完成")
     if not done_dir.exists():
         return []
     if not order.task_code:
@@ -234,5 +265,5 @@ def close_order(
     write_log(db, actor=actor.name, action="交接单闭环", change=f"{order.code} 已闭环于 {today_str()}",
               artifact_path=order.payload_path)
     db.commit()
-    hs.sync_to_zone(db)
+    hs.sync_to_zone(db, order.project_id)
     return _out(order)

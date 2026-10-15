@@ -4,7 +4,10 @@
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
+
+from sqlalchemy.orm import Session
 
 from ..config import settings
 
@@ -71,3 +74,91 @@ def list_zone_files() -> dict[str, list[str]]:
             continue
         out[zone] = sorted(f.name for f in p.iterdir() if f.is_file())
     return out
+
+
+# ---------------- 按项目隔离的目录结构 ----------------
+# 每个项目在 data/projects/<项目编号>/ 下拥有独立五库 + 交接区，资料互不串味。
+# 注意：PROJECTS_ROOT 必须动态计算（依赖 settings.data_dir），不能在模块加载时固化，
+# 否则测试用临时 data_dir 时路径仍指向真实目录，导致测试隔离失效。
+
+
+def projects_root() -> Path:
+    return settings.data_dir / "projects"
+
+
+def safe_segment(name: str) -> str:
+    """把项目编号/名称清洗为合法目录名（保留中文，剔除文件系统禁用字符）。"""
+    s = re.sub(r'[\\/:*?"<>|]', "_", str(name)).strip().strip(".")
+    return s[:80] or "未命名"
+
+
+def project_dir(code: str) -> Path:
+    return projects_root() / safe_segment(code)
+
+
+def project_code_by_id(db: Session, project_id: str) -> str:
+    """按项目 id 取编号（用于目录命名）；取不到时回退全局名。"""
+    from ..models import Project
+
+    p = db.get(Project, project_id)
+    return p.code if p else "PM-Collab"
+
+
+def ensure_project_structure(code: str) -> Path:
+    """为某项目建立独立目录：五库（含子目录）+ 交接区（7 目录 + 交接单.json）。
+
+    幂等；同时保留全局模板库（04_模板）供共享。
+    """
+    ensure_libraries()  # 保留全局模板库等共享资产
+    root = project_dir(code)
+    for lib in LIBRARIES:
+        d = root / lib
+        d.mkdir(parents=True, exist_ok=True)
+        for sub in LIBRARY_SUBDIRS.get(lib, ()):
+            (d / sub).mkdir(parents=True, exist_ok=True)
+    for zone in HANDOFF_ZONES:
+        (root / "交接区" / zone).mkdir(parents=True, exist_ok=True)
+    ledger = root / "交接区" / HANDOFF_LEDGER
+    if not ledger.exists():
+        ledger.write_text(
+            '{\n  "project": "%s",\n  "updated_at": "",\n  "orders": []\n}\n' % code,
+            encoding="utf-8",
+        )
+    return root
+
+
+def project_lib_path(code: str, library: str, sub: str = "") -> Path:
+    p = project_dir(code) / library
+    if sub:
+        p = p / sub
+    return p
+
+
+def project_zone_path(code: str, zone: str) -> Path:
+    return project_dir(code) / "交接区" / zone
+
+
+def project_ledger_path(code: str) -> Path:
+    return project_dir(code) / "交接区" / HANDOFF_LEDGER
+
+
+def list_project_zone_files(code: str) -> dict[str, list[str]]:
+    out: dict[str, list[str]] = {}
+    for zone in HANDOFF_ZONES:
+        p = project_zone_path(code, zone)
+        if not p.exists():
+            out[zone] = []
+            continue
+        out[zone] = sorted(f.name for f in p.iterdir() if f.is_file())
+    return out
+
+
+def ensure_all_project_dirs(db: Session) -> int:
+    """启动期补齐所有项目（含既有 23 个）的独立目录；返回已确保数量。"""
+    from ..models import Project
+
+    n = 0
+    for proj in db.query(Project).all():
+        ensure_project_structure(proj.code)
+        n += 1
+    return n

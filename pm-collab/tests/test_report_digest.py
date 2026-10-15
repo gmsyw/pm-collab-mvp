@@ -30,7 +30,7 @@ def test_digest_generated_pushed_and_archived(app_client, headers, data_dir):
     assert res["period"] and res["pushed_at"]
     assert "每日摘要" in res["summary_text"]
     files = app_client.get("/api/report/latest", headers=headers).json()["files"]
-    assert any(f.startswith("PM-Collab-日报-") for f in files)
+    assert any("-日报-" in f for f in files)
 
 
 def test_latest_digest_empty(app_client, headers):
@@ -40,7 +40,12 @@ def test_latest_digest_empty(app_client, headers):
 
 def test_digest_file_written_to_library(app_client, headers, data_dir):
     app_client.post("/api/report/digest", params={"push": True}, headers=headers)
-    today_files = sorted((data_dir / "03_日志" / "日报周报").glob("PM-Collab-日报-*.md"))
+    # 日报现写入各项目独立目录：data/projects/<项目编号>/03_日志/日报周报
+    today_files = []
+    for pdir in (data_dir / "projects").iterdir():
+        d = pdir / "03_日志" / "日报周报"
+        if d.exists():
+            today_files += sorted(d.glob("*-日报-*.md"))
     assert today_files
     assert "## 四指标" in today_files[-1].read_text(encoding="utf-8")
 

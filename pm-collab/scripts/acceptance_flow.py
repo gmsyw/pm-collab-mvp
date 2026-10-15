@@ -48,7 +48,11 @@ def main() -> int:
     root = Path(__file__).resolve().parents[1]
 
     with TestClient(app) as c:
-        r = c.post("/api/auth/login", json={"username": "admin", "password": "REMOVED-FOR-OPENSOURCE"})
+        import os
+        _pwd = os.environ.get("PM_COLLAB_PASSWORD")
+        if not _pwd:
+            raise SystemExit("请先设置环境变量 PM_COLLAB_PASSWORD（首次启动密码见控制台打印）")
+        r = c.post("/api/auth/login", json={"username": os.environ.get("PM_COLLAB_USER", "admin"), "password": _pwd})
         h = {"Authorization": f"Bearer {r.json()['access_token']}"}
 
         # 1) 交付物登记（含哈希）

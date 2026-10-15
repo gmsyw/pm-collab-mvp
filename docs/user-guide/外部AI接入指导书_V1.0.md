@@ -36,7 +36,7 @@ PM-Collab 是运行在你机器上的本地服务（FastAPI，默认地址 `http
 
 ### 2.1 默认账号（MVP 单用户）
 - 用户名：`admin`
-- 密码：`REMOVED-FOR-OPENSOURCE`
+- 密码：`首次启动随机口令`
 - （来自配置 `settings.bootstrap_username/password`，可自行修改）
 
 ### 2.2 登录拿令牌
@@ -44,7 +44,7 @@ PM-Collab 是运行在你机器上的本地服务（FastAPI，默认地址 `http
 POST {BASE}/api/auth/login
 Content-Type: application/json
 
-{ "username": "admin", "password": "REMOVED-FOR-OPENSOURCE" }
+{ "username": "admin", "password": "首次启动随机口令" }
 ```
 返回：
 ```json
@@ -77,7 +77,7 @@ Content-Type: application/json
 ```bash
 curl -s -X POST {BASE}/api/auth/login \
   -H 'Content-Type: application/json' \
-  -d '{"username":"admin","password":"REMOVED-FOR-OPENSOURCE"}'
+  -d '{"username":"admin","password":"首次启动随机口令"}'
 # => {"access_token":"...","username":"admin"}
 ```
 

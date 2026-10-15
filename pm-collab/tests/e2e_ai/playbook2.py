@@ -30,7 +30,7 @@ def call(client, method, path, token="", params=None, json_body=None):
 
 def main() -> int:
     c = httpx.Client(timeout=20)
-    r = call(c, "POST", "/api/auth/login", json_body={"username": "admin", "password": "REMOVED-FOR-OPENSOURCE"})
+    r = call(c, "POST", "/api/auth/login", json_body={"username": "admin", "password": ""})
     ok = r.status_code == 200 and "access_token" in r.text
     check("PMT-AI2-S0-01", "登录", ok, f"HTTP {r.status_code}")
     token = r.json()["access_token"] if ok else ""

@@ -7,9 +7,9 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from ..config import settings
 from ..models import AppendLog, Member, MetricRecord
 from ..services.digest import compute_metrics, generate_daily_digest
+from ..services.five_libs import project_code_by_id, project_dir
 from .deps import current_member, get_db, project_ctx
 
 router = APIRouter(prefix="/api/report", tags=["度量报表"])
@@ -56,7 +56,7 @@ def latest_digest(
         .first()
     )
     if record is None:
-        return {"record": None, "files": _digest_files()}
+        return {"record": None, "files": _digest_files(pid, db)}
     return {
         "record": {
             "period": record.period,
@@ -70,7 +70,7 @@ def latest_digest(
             "pushed_at": record.pushed_at.isoformat() if record.pushed_at else None,
             "summary_text": record.summary_text,
         },
-        "files": _digest_files(),
+        "files": _digest_files(pid, db),
     }
 
 
@@ -100,8 +100,9 @@ def heartbeat() -> dict:
     return {"ok": True, "now": datetime.now(tz=timezone.utc).isoformat()}
 
 
-def _digest_files() -> list[str]:
-    d = settings.data_dir / "03_日志" / "日报周报"
+def _digest_files(pid: str, db: Session) -> list[str]:
+    code = project_code_by_id(db, pid)
+    d = project_dir(code) / "03_日志" / "日报周报"
     if not d.exists():
         return []
     files = sorted(d.iterdir(), key=lambda p: p.name, reverse=True)

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import re
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,12 +14,13 @@ from sqlalchemy.orm import Session
 
 from ..audit import write_log
 from ..config import settings
-from ..models import CheckpointSignal, DEFAULT_PROJECT_ID, MetricRecord, Project, TaskCard
+from ..models import CheckpointSignal, DEFAULT_PROJECT_ID, HandoffOrder, MetricRecord, Project, TaskCard
 from ..utils import today_str
-from .five_libs import ensure_libraries
+from .five_libs import ensure_project_structure, project_dir
 
 TERMINAL = ("关闭", "取消")
 DONE = ("通过", "关闭")
+REVIEW_TYPES = ("评审意见", "修订返工", "评审通过")
 
 
 def _pct(num: int, den: int) -> float:
@@ -53,6 +55,28 @@ def compute_metrics(db: Session, project_id: str = DEFAULT_PROJECT_ID, period: s
         if t.status not in TERMINAL and (d := _due(t)) is not None and d < today
     ]
 
+    # V0.4 新增：评审轮次分布与平均评审轮次（兼容迁移数据：round 为 0 时从 payload 正则推断）
+    review_orders = (
+        db.query(HandoffOrder)
+        .filter(
+            HandoffOrder.project_id == project_id,
+            HandoffOrder.event_type.in_(REVIEW_TYPES),
+        )
+        .all()
+    )
+    rounds = []
+    for o in review_orders:
+        if (o.round or 0) > 0:
+            rounds.append(o.round)
+        else:
+            m = re.search(r"第\s*(\d+)\s*轮", o.payload_path or "")
+            if m:
+                rounds.append(int(m.group(1)))
+    dist: dict[int, int] = {}
+    for r in rounds:
+        dist[r] = dist.get(r, 0) + 1
+    avg_round = round(sum(rounds) / len(rounds), 2) if rounds else 0.0
+
     return {
         "period": period or today_str(),
         "task_total": task_total,
@@ -63,6 +87,8 @@ def compute_metrics(db: Session, project_id: str = DEFAULT_PROJECT_ID, period: s
         "rework_rate": _pct(len([t for t in tasks if (t.rework_count or 0) > 0]), task_total),
         "ai_adoption_rate": _pct(len(ai_done), len(ai_tasks)),
         "review_close_rate": _pct(len(review_closed), len(review_entered)),
+        "avg_review_rounds": avg_round,
+        "review_round_distribution": dist,
         "open_checkpoints": db.query(CheckpointSignal).filter(
             CheckpointSignal.status == "待处理",
             CheckpointSignal.project_id == project_id,
@@ -110,7 +136,6 @@ def render_digest(md: dict) -> str:
 
 def generate_daily_digest(db: Session, project_id: str = DEFAULT_PROJECT_ID, push: bool = True) -> MetricRecord:
     """生成并记录每日摘要（含文件归档与推送），按项目隔离。"""
-    ensure_libraries()
     md = compute_metrics(db, project_id=project_id)
     text = render_digest(md)
 
@@ -133,7 +158,8 @@ def generate_daily_digest(db: Session, project_id: str = DEFAULT_PROJECT_ID, pus
     db.add(record)
     db.flush()
 
-    path = settings.data_dir / "03_日志" / "日报周报" / f"{proj_code}-日报-{md['period']}-V1.0.0.md"
+    ensure_project_structure(proj_code)
+    path = project_dir(proj_code) / "03_日志" / "日报周报" / f"{proj_code}-日报-{md['period']}-V1.0.0.md"
     Path(path).write_text(text, encoding="utf-8")
 
     write_log(db, actor="PM-AI", action="生成每日摘要", change=f"周期 {md['period']}",

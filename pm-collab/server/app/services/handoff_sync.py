@@ -14,23 +14,34 @@ from ..config import settings
 from ..models import HandoffOrder, TaskCard, VersionLedger
 from ..state_machine import HANDOFF_TRANSITIONS, can_transit_handoff
 from ..utils import sha256_text, today_str, utcnow
-from .five_libs import HANDOFF_LEDGER, ensure_libraries, zone_path
+from .five_libs import (
+    HANDOFF_LEDGER,
+    ensure_libraries,
+    ensure_project_structure,
+    project_code_by_id,
+    project_ledger_path,
+    project_zone_path,
+)
 
 ZONE_LEDGER_NAME = HANDOFF_LEDGER
 
 
-def ledger_path() -> Path:
-    """交接单 JSON 路径（每次调用解析，便于测试隔离与目录变更）。"""
-    return settings.handoff_dir / ZONE_LEDGER_NAME
+def ledger_path(code: str) -> Path:
+    """某项目交接单 JSON 路径（按项目隔离）。"""
+    return project_ledger_path(code)
 
 # ---------------- 任务卡落盘 / 完成摘要解析 ----------------
 
 
-def render_task_card_file(task: TaskCard, version: str = "V1") -> Path:
-    """生成《通用方法》§4 约定的派单文件：编号_动作_名称_Vx.md"""
-    ensure_libraries()
+def render_task_card_file(task: TaskCard, db: Session, version: str = "V1") -> Path:
+    """生成《通用方法》§4 约定的派单文件：编号_动作_名称_Vx.md
+
+    落盘到该任务所属项目的独立交接区（data/projects/<项目编号>/交接区/派单/）。
+    """
+    code = project_code_by_id(db, task.project_id)
+    ensure_project_structure(code)
     safe_title = re.sub(r"[\\/:*?\"<>|]", "_", task.title)[:40]
-    path = zone_path("派单") / f"{task.code}_派单_{safe_title}_{version}.md"
+    path = project_zone_path(code, "派单") / f"{task.code}_派单_{safe_title}_{version}.md"
     body = f"""# 任务卡 {task.code} · {task.title}
 
 ## 目标
@@ -84,8 +95,13 @@ def parse_completion_file(path: Path) -> dict[str, Any]:
 # ---------------- 交接单 ↔ 数据库同步 ----------------
 
 
-def _dump_orders(db: Session) -> dict[str, Any]:
-    rows = db.query(HandoffOrder).order_by(HandoffOrder.code).all()
+def _dump_orders(db: Session, project_id: str) -> dict[str, Any]:
+    rows = (
+        db.query(HandoffOrder)
+        .filter(HandoffOrder.project_id == project_id)
+        .order_by(HandoffOrder.code)
+        .all()
+    )
     orders = []
     for r in rows:
         orders.append({
@@ -100,29 +116,31 @@ def _dump_orders(db: Session) -> dict[str, Any]:
             "content_hash": r.content_hash or "",
         })
     return {
-        "project": "PM-Collab",
+        "project": project_code_by_id(db, project_id),
         "updated_at": utcnow().isoformat(),
         "orders": orders,
     }
 
 
-def sync_to_zone(db: Session) -> dict[str, Any]:
-    """库 → 交接区 JSON（服务层为唯一权威，写入即落文件）。"""
-    LEDGER = ledger_path()
-    ensure_libraries()
-    payload = _dump_orders(db)
+def sync_to_zone(db: Session, project_id: str) -> dict[str, Any]:
+    """库 → 交接区 JSON（服务层为唯一权威，写入即落文件）。按项目隔离。"""
+    code = project_code_by_id(db, project_id)
+    ensure_project_structure(code)
+    LEDGER = ledger_path(code)
+    payload = _dump_orders(db, project_id)
     LEDGER.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     return {"direction": "db→file", "count": len(payload["orders"]), "path": str(LEDGER)}
 
 
-def sync_from_zone(db: Session, actor: str = "watchdog") -> dict[str, Any]:
-    """交接区 JSON → 库：新建同步入库，状态按状态机合法方向更新。
+def sync_from_zone(db: Session, project_id: str, actor: str = "watchdog") -> dict[str, Any]:
+    """交接区 JSON → 库：新建同步入库，状态按状态机合法方向更新。按项目隔离。
 
     非法（倒退/跳变）状态一律忽略并记入冲突列表，保证双写一致。
     """
-    LEDGER = ledger_path()
+    code = project_code_by_id(db, project_id)
+    LEDGER = ledger_path(code)
     if not LEDGER.exists():
         return {"direction": "file→db", "created": 0, "updated": 0, "conflicts": []}
 
@@ -134,13 +152,15 @@ def sync_from_zone(db: Session, actor: str = "watchdog") -> dict[str, Any]:
     created = updated = 0
     conflicts: list[str] = []
     for item in payload.get("orders", []):
-        code = item.get("code")
-        if not code:
+        code_i = item.get("code")
+        if not code_i:
             continue
-        row = db.query(HandoffOrder).filter(HandoffOrder.code == code).first()
+        row = db.query(HandoffOrder).filter(HandoffOrder.code == code_i).first()
+        if row is not None and row.project_id != project_id:
+            continue  # 属于其它项目，跳过
         if row is None:
             row = HandoffOrder(
-                code=code,
+                code=code_i,
                 sender=item.get("sender", ""),
                 receiver=item.get("receiver", ""),
                 zone=item.get("zone", "派单"),
@@ -148,6 +168,7 @@ def sync_from_zone(db: Session, actor: str = "watchdog") -> dict[str, Any]:
                 status=item.get("status", "待投喂"),
                 task_code=item.get("task_code"),
                 content_hash=item.get("content_hash", ""),
+                project_id=project_id,
             )
             db.add(row)
             created += 1
@@ -159,7 +180,7 @@ def sync_from_zone(db: Session, actor: str = "watchdog") -> dict[str, Any]:
                 updated += 1
             else:
                 conflicts.append(
-                    f"{code}：{row.status} → {target} 非法（允许 {list(HANDOFF_TRANSITIONS.get(row.status, ()))}）"
+                    f"{code_i}：{row.status} → {target} 非法（允许 {list(HANDOFF_TRANSITIONS.get(row.status, ()))}）"
                 )
         row.payload_path = item.get("payload_path", row.payload_path)
         row.receiver = item.get("receiver", row.receiver)

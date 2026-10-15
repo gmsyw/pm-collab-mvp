@@ -5,8 +5,9 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from ..models import Member, Project, TaskCard
-from ..schemas import ProjectIn
+from ..schemas import ProjectIn, ProjectUpdateIn
 from ..services import projects as proj_svc
+from ..audit import write_log
 from .deps import current_member, get_db
 
 router = APIRouter(prefix="/api/projects", tags=["项目"])
@@ -54,6 +55,29 @@ def get_project(
     p = db.get(Project, project_id)
     if p is None:
         raise HTTPException(status_code=404, detail="项目不存在")
+    return {
+        "id": p.id, "code": p.code, "name": p.name, "description": p.description,
+        "status": p.status, "owner": p.owner,
+    }
+
+
+@router.put("/{project_id}")
+def update_project(
+    project_id: str,
+    payload: ProjectUpdateIn,
+    db: Session = Depends(get_db),
+    actor: Member = Depends(current_member),
+) -> dict:
+    """编辑项目：名称/描述/负责人/状态（仅更新传入字段，编号不可改，保可追溯）。"""
+    p = db.get(Project, project_id)
+    if p is None:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    data = payload.model_dump(exclude_unset=True)  # 仅更新客户端实际传入的字段
+    data.pop("code", None)  # 编号不可改
+    for key, value in data.items():
+        setattr(p, key, value)
+    db.commit()
+    write_log(db, actor=actor.name, action="编辑项目", change=f"{p.code} {p.name}")
     return {
         "id": p.id, "code": p.code, "name": p.name, "description": p.description,
         "status": p.status, "owner": p.owner,

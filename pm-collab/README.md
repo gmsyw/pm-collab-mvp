@@ -22,7 +22,7 @@ python -m venv .venv
 # 3) 访问
 #    Web UI（已构建）：http://127.0.0.1:8000/
 #    API 文档：       http://127.0.0.1:8000/docs
-# 默认账号：admin / REMOVED-FOR-OPENSOURCE
+# 默认账号：admin（首次启动密码见控制台打印，登录后请立即修改）
 ```
 
 前端开发模式（可选）：
@@ -90,6 +90,6 @@ pm-collab/
 | `PM_DAILY_DIGEST_HOUR/MINUTE` | 8 / 30 | 每日摘要定时 |
 | `PM_WATCHDOG_ENABLED` / `PM_SCHEDULER_ENABLED` | true | 交接区监听与定时任务开关 |
 | `PM_FEISHU_WEBHOOK` | 空 | 可选推送渠道；留空则本地日志留痕 |
-| `PM_BOOTSTRAP_USERNAME/PASSWORD` | admin / REMOVED-FOR-OPENSOURCE | 初始人类成员 |
+| `PM_BOOTSTRAP_USERNAME/PASSWORD` | admin / （首启随机生成） | 初始人类成员；留空则系统生成一次性口令 |
 
 > 说明：本机未安装 PostgreSQL 16，MVP 默认以 SQLite 单机形态运行（同一套 ORM/迁移代码，切换 `PM_DATABASE_URL` 即启用 PG，触发器与 REVOKE 由 `services/triggers.py` 按方言自动适配）。

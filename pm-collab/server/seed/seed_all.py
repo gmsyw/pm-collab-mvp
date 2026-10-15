@@ -203,7 +203,7 @@ TASKS = [
 SOURCE_DOC = "需求规格书 V1.0"
 
 
-def seed_all(db: Session, default_password: str = "REMOVED-FOR-OPENSOURCE") -> dict[str, int]:
+def seed_all(db: Session, default_password: str = "") -> dict[str, int]:
     counts = {"roles": 0, "members": 0, "requirements": 0, "tasks": 0}
 
     for r in ROLES:

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 import tempfile
 from pathlib import Path
 
@@ -27,7 +28,9 @@ from server.app.security import hash_password  # noqa: E402
 from server.app.services.db_bootstrap import init_db  # noqa: E402
 from server.app.services.five_libs import ensure_libraries  # noqa: E402
 
-ADMIN = ("admin", "REMOVED-FOR-OPENSOURCE")
+# 测试库 admin 口令等于 settings.bootstrap_password（默认为空串）；
+# 切勿写死真实口令（OSS-02 / AC-2）。
+ADMIN = ("admin", "")
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -38,7 +41,14 @@ def _bootstrap_db():
 
 @pytest.fixture(autouse=True)
 def _clean_zone_files():
-    """每个用例前清空交接区文件，避免用例间互相污染（文件库为会话级临时目录）。"""
+    """每个用例前清空交接区文件，避免用例间互相污染（文件库为会话级临时目录）。
+
+    同时清空各项目独立目录（data/projects/*），因为按项目隔离后交接单落盘到
+    项目目录，若不清理会跨用例残留（如 T-T14 完成文件导致回收用例误判）。
+    """
+    import shutil
+
+    from server.app.config import settings
     from server.app.services.five_libs import HANDOFF_ZONES, ensure_libraries, zone_path
 
     ensure_libraries()
@@ -46,6 +56,11 @@ def _clean_zone_files():
         for f in zone_path(zone).iterdir():
             if f.is_file():
                 f.unlink()
+    proj_root = settings.data_dir / "projects"
+    if proj_root.exists():
+        for p in proj_root.iterdir():
+            if p.is_dir():
+                shutil.rmtree(p, ignore_errors=True)
     yield
 
 
@@ -74,13 +89,22 @@ def headers(app_client) -> dict[str, str]:
 
 
 @pytest.fixture()
-def ai_headers(db, app_client) -> dict[str, str]:
+def ai_member_password() -> str:
+    """测试用 AI 成员口令：优先取环境变量 PM_COLLAB_PASSWORD，否则随机生成。
+
+    避免源码硬编码口令字面量（OSS-02 / AC-2），与 scripts/smoke.py 等脚本口径一致。
+    """
+    return os.environ.get("PM_COLLAB_PASSWORD") or secrets.token_urlsafe(12)
+
+
+@pytest.fixture()
+def ai_headers(db, app_client, ai_member_password) -> dict[str, str]:
     """AI 成员令牌：用于验证「AI 不可代签门禁」。"""
     ai = Member(code="AI-TEST", name="测试AI", member_type="AI", status="在岗",
-                username="ai_bot", password_hash=hash_password("ai-pass"))
+                username="ai_bot", password_hash=hash_password(ai_member_password))
     db.add(ai)
     db.commit()
-    r = app_client.post("/api/auth/login", json={"username": "ai_bot", "password": "ai-pass"})
+    r = app_client.post("/api/auth/login", json={"username": "ai_bot", "password": ai_member_password})
     assert r.status_code == 200
     return {"Authorization": f"Bearer {r.json()['access_token']}"}
 

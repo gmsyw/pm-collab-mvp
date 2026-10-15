@@ -20,7 +20,14 @@ router = APIRouter(prefix="/api/tasks", tags=["任务卡"])
 
 
 def _apply_wbs_links(db: Session, obj: TaskCard, milestone_id: str | None, work_package_id: str | None) -> None:
-    """按 FK 反查并填充冗余展示字段 milestone / work_package（保持与历史数据兼容）。"""
+    """按 FK 反查并填充冗余展示字段 milestone / work_package，并强制层级归属一致。
+
+    归属约束（需求：每个层级必须归属自己的上级，不能混乱）：
+      - 里程碑必须属于当前项目；
+      - 工作包必须属于当前项目，且当同时给定里程碑时，工作包必须挂在「该里程碑」下；
+      - 仅给定工作包时，自动继承其所属里程碑，保证 milestone_id 与 work_package 不矛盾。
+    """
+    ms = None
     if milestone_id:
         ms = db.get(Milestone, milestone_id)
         if ms is None or ms.project_id != obj.project_id:
@@ -31,6 +38,18 @@ def _apply_wbs_links(db: Session, obj: TaskCard, milestone_id: str | None, work_
         wp = db.get(WorkPackage, work_package_id)
         if wp is None or wp.project_id != obj.project_id:
             raise HTTPException(status_code=404, detail="所属工作包不存在或不属于当前项目")
+        # 层级一致性：工作包必须挂在指定的里程碑下；仅给工作包时反推里程碑
+        if ms is not None and wp.milestone_id != ms.id:
+            raise HTTPException(
+                status_code=409,
+                detail=f"工作包 {wp.code} 不属于里程碑 {ms.code}（它属于 {wp.milestone_id}），层级归属冲突",
+            )
+        if ms is None:
+            ms = db.get(Milestone, wp.milestone_id)
+            if ms is None or ms.project_id != obj.project_id:
+                raise HTTPException(status_code=404, detail="工作包所属里程碑不存在或不属于当前项目")
+            obj.milestone_id = ms.id
+            obj.milestone = ms.name
         obj.work_package_id = wp.id
         obj.work_package = wp.name
 
@@ -93,6 +112,20 @@ def get_task(
     obj = db.get(TaskCard, task_id)
     if obj is None:
         raise HTTPException(status_code=404, detail="任务不存在")
+    return _task_out(obj)
+
+
+@router.get("/code/{code}")
+def get_task_by_code(
+    code: str,
+    pid: str = Depends(project_ctx),
+    db: Session = Depends(get_db),
+    _: Member = Depends(current_member),
+) -> dict:
+    """按任务编号（项目内唯一）取单条，供前端关联跳转（就地抽屉）直接使用。"""
+    obj = db.query(TaskCard).filter(TaskCard.project_id == pid, TaskCard.code == code).first()
+    if obj is None:
+        raise HTTPException(status_code=404, detail=f"任务不存在：{code}")
     return _task_out(obj)
 
 
