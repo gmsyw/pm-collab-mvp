@@ -42,11 +42,11 @@ Thumbs.db
 .DS_Store
 .vscode/
 
-# ============ 内部安装包与构建产物（不进 release/oss，且为含旧字面量的旧副本） ============
+# ============ 内部安装包 ============
+# 解压目录（PM-Collab-安装包/、PM-Collab-安装包-linux/）不进仓；
+# 归档 zip / tar.gz 已扫描确认不含口令与 SCENE-MVP，纳入 release/oss 供用户一键安装。
 PM-Collab-安装包/
 PM-Collab-安装包-linux/
-PM-Collab-安装包*.zip
-PM-Collab-安装包*-linux.tar.gz
 pm-collab/web/dist/
 pm-collab/_dbg.py
 _sync_pack.py
