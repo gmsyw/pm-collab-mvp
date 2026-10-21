@@ -54,3 +54,5 @@ _sync_pack.py
 # ============ 一次性临时文件（如 git filter-repo 的 blob 替换输入，含旧字面量） ============
 # 切勿提交；如需跑 filter-repo 历史清洗，用后请立即删除。
 replace.txt
+# OSS-08 段1：内部指导书不进发布物
+/项目指导书.md
