@@ -86,7 +86,7 @@ PM_COLLAB_PASSWORD=<首次启动打印的密码> python scripts/smoke.py   # 端
 ## 文档
 - 设计：`docs/design/`（设计大纲、WBS 设计、设计开发流程）
 - 使用：`docs/user-guide/`（使用手册、外部 AI 接入指导书）
-- 测试：`docs/testing/`（验收测试大纲、实现评审记录）
+- 测试：`docs/testing/`（验收测试大纲）
 - 许可：`docs/third-party-licenses.md`
 
 > Issue 欢迎，模板 v0.2 补。
